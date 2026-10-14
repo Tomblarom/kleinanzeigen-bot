@@ -1,0 +1,21 @@
+services:
+  bot:
+    image: ${APP_IMAGE:?Use an image digest from ari-deploy publish}
+    init: true
+    restart: unless-stopped
+    shm_size: 512m
+    stop_grace_period: 30s
+    environment:
+      TZ: Europe/Berlin
+      CHECK_INTERVAL_SECONDS: "86400"
+      KLEINANZEIGEN_BOT_USERNAME: ${KLEINANZEIGEN_BOT_USERNAME:-}
+      KLEINANZEIGEN_BOT_PASSWORD: ${KLEINANZEIGEN_BOT_PASSWORD:-}
+    volumes:
+      - bot-data:/mnt/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  bot-data:

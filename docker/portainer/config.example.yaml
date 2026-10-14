@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+login:
+  username: "${KLEINANZEIGEN_BOT_USERNAME}"
+  password: "${KLEINANZEIGEN_BOT_PASSWORD}"
+ad_files:
+  - "./downloaded-ads/**/*.yaml"
+download:
+  dir: "./downloaded-ads"
+ad_defaults:
+  republication_interval: 30
+publishing:
+  delete_old_ads: AFTER_PUBLISH
+browser:
+  binary_location: /usr/bin/chromium
+  arguments:
+    - --headless=new
+    - --no-sandbox
+    - --disable-dev-shm-usage
+    - --window-size=1440,1080
+  suppress_unsupported_flag_warning: false
+  use_private_window: false
+  user_data_dir: /mnt/data/browser-profile
+captcha:
+  auto_restart: true
+  restart_delay: 6h
+update_check:
+  enabled: false
