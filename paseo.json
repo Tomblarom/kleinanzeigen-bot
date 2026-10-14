@@ -2,6 +2,6 @@
   "scripts": {
     "test": { "command": ".venv/bin/pdm run test" },
     "lint": { "command": ".venv/bin/pdm run lint" },
-    "image-check": { "command": "docker build -t kleinanzeigen-bot:dev . && bash scripts/check_image.sh kleinanzeigen-bot:dev" }
+    "image-check": { "command": "docker build --network=host -t kleinanzeigen-bot:dev . && bash scripts/check_image.sh kleinanzeigen-bot:dev" }
   }
 }

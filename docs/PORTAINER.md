@@ -5,6 +5,8 @@ checked out directly at `/home/code/projects/docker`, the existing workspace roo
 `origin` is `Tomblarom/kleinanzeigen-bot`; `upstream` is
 `Second-Hand-Friends/kleinanzeigen-bot`. Deployment files live on
 `chore/portainer-deployment`, keeping upstream `main` available for feature branches.
+The fork uses `chore/portainer-deployment` as its default branch so its deployment
+workflow can be dispatched without adding deployment commits to `main`.
 
 The Portainer stack is `kleinanzeigen-bot` on `ari-dock` (environment 3). It uses
 a tested image from this fork, pinned by digest, and a named `bot-data` volume.
@@ -50,7 +52,7 @@ republishing cannot be verified until your account and ads are configured.
   `.venv/bin/pdm install`. Follow `CONTRIBUTING.md` for upstream changes.
 - For a future upstream PR, branch from `upstream/main` so deployment-specific
   commits are not included. No upstream PR is opened as part of this setup.
-- Build and check: `docker build -t kleinanzeigen-bot:dev .`, then
+- Build and check on this host: `docker build --network=host -t kleinanzeigen-bot:dev .`, then
   `bash scripts/check_image.sh kleinanzeigen-bot:dev`.
 - Publish: `ari-deploy publish --ref chore/portainer-deployment --wait` after
   committing and pushing changes to the deployment branch.
