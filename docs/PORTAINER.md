@@ -10,6 +10,8 @@ workflow can be dispatched without adding deployment commits to `main`.
 
 The Portainer stack is `kleinanzeigen-bot` on `ari-dock` (environment 3). It uses
 a tested image from this fork, pinned by digest, and a named `bot-data` volume.
+The GHCR image is public, matching the public fork. Only application source and
+dependencies are included; credentials, ads and browser profiles stay in the volume.
 It exposes no web interface or network port. Use the container console in Portainer
 (`/bin/bash`) and its logs for setup and operation.
 

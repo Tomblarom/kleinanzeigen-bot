@@ -71,12 +71,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      # This public fork distributes only source; runtime data is kept in a volume.
+      PACKAGE_VISIBILITY: public
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: checked-image-${{ github.sha }}
           path: ${{ runner.temp }}
-      - name: Publish the tested image to private GHCR
+      - name: Publish the tested image to GHCR
         env:
           GH_TOKEN: ${{ github.token }}
           REGISTRY_USER: ${{ github.actor }}
@@ -93,16 +96,16 @@ jobs:
           scope=users
           if [ "$owner_type" = Organization ]; then scope=orgs; fi
           package_api="$scope/$owner/packages/container/${package,,}"
-          # A new package starts private. Never append to an existing public package.
+          # Keep package visibility consistent with this public fork's policy.
           if gh api "$package_api" > "$RUNNER_TEMP/existing-package.json" 2> "$RUNNER_TEMP/package-error.txt"; then
-            test "$(jq -r .visibility "$RUNNER_TEMP/existing-package.json")" = private || {
-              echo 'Existing package is not private; configure an explicit project policy first.'; exit 1;
+            test "$(jq -r .visibility "$RUNNER_TEMP/existing-package.json")" = "$PACKAGE_VISIBILITY" || {
+              echo 'Existing package visibility differs from project policy.'; exit 1;
             }
           elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/package-error.txt"; then
             echo 'Could not verify package access before publishing.'; exit 1
           fi
           docker push "$image"
-          test "$(gh api "$package_api" --jq .visibility)" = private
+          test "$(gh api "$package_api" --jq .visibility)" = "$PACKAGE_VISIBILITY"
           digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
           jq -n --arg image "$digest" --arg commit "$SOURCE_COMMIT" --arg repository "$SOURCE_REPOSITORY" \
             '{image:$image, sourceCommit:$commit, repository:$repository}' > "$RUNNER_TEMP/release.json"
