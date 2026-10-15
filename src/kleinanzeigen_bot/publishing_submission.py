@@ -9,10 +9,12 @@ confirmation page redirects too fast to inspect the URL directly.
 """
 
 import html
+import json
 import re
+import sys
 import urllib.parse as urllib_parse
 from gettext import gettext as _
-from typing import Final
+from typing import Final, Literal
 
 from nodriver.core.connection import ProtocolException
 
@@ -20,7 +22,7 @@ from . import captcha_flow, published_ads
 from .model.ad_model import Ad, AdUpdateStrategy
 from .model.config_model import CaptchaConfig
 from .utils import loggers as _loggers
-from .utils.exceptions import AdFormValidationError, PublishSubmissionUncertainError
+from .utils.exceptions import AdFormValidationError, ManualPackageSelectionRequiredError, PublishSubmissionUncertainError
 from .utils.misc import ainput
 from .utils.web_scraping_mixin import By, WebScrapingMixin
 
@@ -166,10 +168,187 @@ _SUBMIT_LABELS:Final[tuple[str, ...]] = (
 )
 
 
+_SUBMIT_BUTTON_SCRIPT:Final[str] = r"""
+(() => {
+    const action = ACTION;
+    if (window.location.pathname.startsWith('/p-anzeigentypauswahl/')) return 'package';
+    const visible = element => element.getClientRects().length > 0
+        && getComputedStyle(element).visibility !== 'hidden' && !element.matches(':disabled');
+    const labels = LABELS;
+    // The editor's action buttons live in the native form around #ad-title.
+    const scope = document.getElementById('ad-title')?.closest('form') || document;
+    const buttons = [...scope.querySelectorAll('button')].filter(visible);
+    // Labels in priority order: a secondary save button earlier in the DOM must not win.
+    let submit = null;
+    for (const label of labels) {
+        submit = buttons.find(button => button.textContent.trim().includes(label));
+        if (submit) break;
+    }
+    if (submit) {
+        if (action === 'inspect') return 'submit';
+        if (action !== 'submit') return false;
+        submit.click();
+        return true;
+    }
+    // New vehicle/real-estate ads continue to a package selection step instead.
+    const next = buttons.find(button => button.textContent.replace(/\s+/g, ' ').trim() === 'Nächster Schritt');
+    if (next) {
+        if (action === 'inspect') return 'next';
+        if (action !== 'next') return false;
+        next.click();
+        return true;
+    }
+    return false;
+})()
+""".replace("LABELS", json.dumps(_SUBMIT_LABELS))
+
+
+async def _find_submit_button(web:WebScrapingMixin) -> object:
+    """Wait for a submit control without performing any click inside polling."""
+    async def _inspect() -> object:
+        """Read the available submit action without clicking any control."""
+        return await web.web_execute(_SUBMIT_BUTTON_SCRIPT.replace("ACTION", json.dumps("inspect")))
+
+    return await web.web_await(_inspect, timeout_error_message = str(_("Could not find submit button")))
+
+
+async def _click_final_submit_button(web:WebScrapingMixin) -> None:
+    """Attempt one final click, treating a lost response as an uncertain publish."""
+    try:
+        submitted = await web.web_execute(_SUBMIT_BUTTON_SCRIPT.replace("ACTION", json.dumps("submit")))
+    except (TimeoutError, ProtocolException) as ex:
+        raise PublishSubmissionUncertainError(_("submission may have succeeded before failure")) from ex
+    if submitted is False:
+        # The script explicitly found no button and performed no click.
+        raise TimeoutError(_("Could not find submit button"))
+    if submitted is not True:
+        # The script only returns booleans; any other value means the page context
+        # changed mid-call, so a click may already have happened.
+        raise PublishSubmissionUncertainError(_("submission may have succeeded before failure"))
+
+
+_FREE_BASIS_PACKAGE_SCRIPT:Final[str] = r"""
+(() => {
+    const action = ACTION;
+    const visible = element => element && element.getClientRects().length > 0
+        && getComputedStyle(element).visibility !== 'hidden';
+    const text = element => (element?.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!window.location.pathname.startsWith('/p-anzeigentypauswahl/')) return {state: 'waiting'};
+    const radios = [...document.querySelectorAll('button[role="radio"]')].filter(visible);
+    const candidates = radios.filter(element => text(element) === 'Basis Paket');
+    if (!candidates.length) return {state: 'waiting'};
+    if (candidates.length !== 1) return {state: 'unsafe'};
+    const basis = candidates[0];
+    // The Basis card is the largest container holding this radio but no other
+    // package, so another package's price can neither prove nor hide its own.
+    let card = basis;
+    while (card.parentElement && card.parentElement !== document.body
+        && !radios.some(element => element !== basis && card.parentElement.contains(element))) card = card.parentElement;
+    const cardText = text(card);
+    const freePrice = [...card.querySelectorAll('*')].some(element => visible(element)
+        && text(element) === 'Kostenlos' && ![...element.children].some(child => text(child) === 'Kostenlos'));
+    // Free means an explicit "Kostenlos" price and no amount anywhere in the card;
+    // marketing copy is deliberately not part of the check.
+    const free = freePrice && !/\d[\d.,]*\s*(?:€|EUR)/i.test(cardText);
+    if (!free || basis.disabled) return {state: 'unsafe'};
+    if (action === 'select' && basis.getAttribute('aria-checked') !== 'true') {
+        basis.click();
+        return {state: 'waiting'};
+    }
+    const selected = basis.getAttribute('aria-checked') === 'true';
+    if (selected && radios.some(element => element !== basis && element.getAttribute('aria-checked') === 'true')) {
+        return {state: 'unsafe'};
+    }
+    const buttons = [...document.querySelectorAll('button')].filter(element => visible(element)
+        && !element.disabled && text(element) === 'Anzeige aufgeben');
+    if (action === 'submit') {
+        // Recheck the chosen free option atomically with the final click.
+        if (!selected || buttons.length !== 1) return {state: 'unsafe'};
+        buttons[0].click();
+        return {state: 'submitted'};
+    }
+    return {state: 'ready', selected, submitReady: buttons.length === 1};
+})()
+"""
+
+
+async def _submit_free_basis_package(web:WebScrapingMixin) -> None:
+    """Choose the verified free package, then submit once outside retry polling."""
+    failure_message = _("The free Basis package could not be verified; the ad was not published")
+
+    async def _wait_for_package(*, selected:bool = False) -> None:
+        """Poll read-only state; carry rejection out of the retry predicate."""
+        async def _check_state() -> dict[str, object] | None:
+            """Return package readiness or editor errors without publishing the ad."""
+            errors = await _get_form_validation_errors(web)
+            if errors:
+                return {"errors": errors}
+            result = await web.web_execute(_FREE_BASIS_PACKAGE_SCRIPT.replace("ACTION", json.dumps("inspect")))
+            if not isinstance(result, dict):
+                return None
+            if result.get("state") == "unsafe" or (
+                result.get("state") == "ready" and (not selected or (result.get("selected") and result.get("submitReady")))
+            ):
+                return result
+            return None
+
+        # No final submit has been attempted: transport failures remain retryable.
+        state = await web.web_await(_check_state)
+        if state is None:
+            raise AdFormValidationError(failure_message)
+        errors = state.get("errors")
+        if isinstance(errors, list):
+            raise AdFormValidationError(_("Ad form validation failed: %s") % "; ".join(errors))
+        if state.get("state") == "unsafe":
+            raise AdFormValidationError(failure_message)
+
+    await _wait_for_package()
+    result = await web.web_execute(_FREE_BASIS_PACKAGE_SCRIPT.replace("ACTION", json.dumps("select")))
+    if not isinstance(result, dict) or result.get("state") == "unsafe":
+        raise AdFormValidationError(failure_message)
+    await _wait_for_package(selected = True)
+    try:
+        result = await web.web_execute(_FREE_BASIS_PACKAGE_SCRIPT.replace("ACTION", json.dumps("submit")))
+    except (TimeoutError, ProtocolException) as ex:
+        # The final click may already have published the ad; never retry it.
+        raise PublishSubmissionUncertainError(_("submission may have succeeded before failure")) from ex
+    if isinstance(result, dict) and result.get("state") == "unsafe":
+        raise AdFormValidationError(failure_message)
+    if not isinstance(result, dict) or result.get("state") != "submitted":
+        raise PublishSubmissionUncertainError(_("submission may have succeeded before failure"))
+
+
+def _require_interactive_terminal() -> None:
+    """Manual package selection needs a user at a terminal to confirm in the browser."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        raise ManualPackageSelectionRequiredError(
+            _("Manual package selection requires an interactive terminal; configure publishing.package_selection: BASIS for automatic free-package publication")
+        )
+
+
+async def _wait_for_manual_package_submission(web:WebScrapingMixin) -> None:
+    """Let the user select and publish; refuse to confirm a remaining draft."""
+    _require_interactive_terminal()
+    failure_message = _("Manual package publication was not confirmed; check your listings before retrying")
+    try:
+        await ainput(_("Choose a package and finish publishing in the browser, then press Enter to continue..."))
+        still_editing = await web.web_execute(
+            "window.location.pathname.startsWith('/p-anzeigentypauswahl/')"
+            " || window.location.pathname === '/p-anzeige-aufgeben-schritt2.html'"
+        )
+    except (EOFError, OSError, TimeoutError, ProtocolException) as ex:
+        # A human may have submitted already. Never retry an uncertain publish.
+        raise PublishSubmissionUncertainError(failure_message) from ex
+    if still_editing is not False:
+        raise PublishSubmissionUncertainError(failure_message)
+
+
 async def _get_form_validation_errors(web:WebScrapingMixin) -> list[str]:
     """Read visible field errors from the ad form without collecting field values."""
     result = await web.web_execute(r"""
     (() => {
+        // The live editor (generic and vehicle categories) wraps #ad-title and all
+        // controls in one native <form>; without it there is nothing to inspect.
         const form = document.getElementById('ad-title')?.closest('form');
         if (!form) return [];
         const visible = element => element && element.getClientRects().length > 0
@@ -207,8 +386,24 @@ async def _get_form_validation_errors(web:WebScrapingMixin) -> list[str]:
             const messages = references.trim().split(/\s+/).map(id => document.getElementById(id))
                 .filter(element => element && form.contains(element) && visible(element))
                 // Descriptions can be hints; the live brand control marks its error text-critical.
-                .filter(element => errorReferences || element.matches('[id$="-error"], [role="alert"], .text-critical'))
+                .filter(element => errorReferences || element.matches('[id$="-error"], [role="alert"], [role="status"], .text-critical'))
                 .map(element => { reportedElements.add(element); return text(element); }).filter(Boolean);
+            if (!messages.length && !field.validationMessage && field.getAttribute('aria-invalid') === 'true') {
+                // Some fields expose an adjacent status without an ARIA reference.
+                // Only inspect a container holding this one input.
+                for (let scope = field.parentElement; scope && scope !== form; scope = scope.parentElement) {
+                    const controls = [...scope.querySelectorAll('input, select, textarea, button')].filter(visible);
+                    if (controls.length !== 1) break;
+                    const statuses = [...scope.querySelectorAll('[role="status"], [role="alert"]')].filter(visible);
+                    if (statuses.some(status => text(status))) {
+                        for (const status of statuses) {
+                            reportedElements.add(status);
+                            if (text(status)) messages.push(text(status));
+                        }
+                        break;
+                    }
+                }
+            }
             add(field, messages.join(' ') || field.validationMessage);
         }
         // The redesigned category controls reuse id="attribute-error" and do not
@@ -222,42 +417,67 @@ async def _get_form_validation_errors(web:WebScrapingMixin) -> list[str]:
     return [error for error in result if isinstance(error, str) and error.strip()] if isinstance(result, list) else []
 
 
-async def _click_submit_button(web:WebScrapingMixin) -> None:
-    """Find and click the submit button across page variants.
+_NEXT_STEP_OUTCOME_SCRIPT:Final[str] = r"""
+window.location.pathname.startsWith('/p-anzeigentypauswahl/') ? 'package'
+    : [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Ohne Bild veröffentlichen') ? 'hint'
+    : null
+"""
 
-    Uses JS to locate the <button> element (not a child span/div) containing
-    the label text, ensuring the click reaches the actual button.  Wrapped in
-    ``web_await`` to retry because React may not have re-rendered the submit
-    button after a deferred title update or captcha solve.
+
+async def _confirm_image_hint_before_package_page(web:WebScrapingMixin) -> None:
+    """Confirm the no-image hint that "Nächster Schritt" shows before the package page.
+
+    Waits (bounded) for either the hint or the package page; only the hint is clicked,
+    and only once. Anything else (e.g. editor validation errors) is left to the caller's
+    package-page polling, which reports it.
     """
-
-    async def _find_and_click() -> bool:
-        """Attempt to find and click a submit button for any known label."""
-        for label in _SUBMIT_LABELS:
-            clicked = await web.web_execute(f"""
-            (() => {{
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {{
-                    if (btn.textContent.trim().includes('{label}')) {{
-                        btn.click();
-                        return true;
-                    }}
-                }}
-                return false;
-            }})()
-            """)
-            if clicked:
-                return True
-        return False
-
     try:
-        await web.web_await(
-            _find_and_click,
-            timeout_error_message = str(_("Could not find submit button")),
+        outcome = await web.web_await(
+            lambda: web.web_execute(_NEXT_STEP_OUTCOME_SCRIPT),
+            timeout = web.timeout("page_load"),
         )
     except TimeoutError:
-        raise TimeoutError(_("Could not find submit button")) from None
-    await web.web_sleep()
+        return
+    if outcome == "hint":
+        # The draft exists already: a vanished hint must not raise a retryable TimeoutError.
+        hint = await web.web_probe(By.TEXT, "Ohne Bild ver\u00f6ffentlichen", timeout = web.timeout("quick_dom"))
+        if hint is not None:
+            await hint.click()
+
+
+async def _click_submit_button(
+    web:WebScrapingMixin,
+    *,
+    package_selection:Literal["BASIS", "MANUAL"] = "MANUAL",
+) -> None:
+    """Poll read-only button state, then click once outside retry polling.
+
+    Package selection stays manual unless BASIS is explicitly configured.
+    A draft-only next step can fail with a retryable transport error; after
+    attempting a final publish click, an unknown outcome is never retryable.
+    """
+    state = await _find_submit_button(web)
+    if state in {"next", "package"} and package_selection != "BASIS":
+        # Fail before "Nächster Schritt" creates a draft that nobody finishes.
+        _require_interactive_terminal()
+    if state == "next":
+        # This creates a draft, not a published listing. Preserve retryable
+        # TimeoutError/ProtocolException instead of claiming form rejection.
+        continued = await web.web_execute(_SUBMIT_BUTTON_SCRIPT.replace("ACTION", json.dumps("next")))
+        if continued is not True:
+            raise TimeoutError(_("Could not continue to package selection; the ad was not published"))
+        await _confirm_image_hint_before_package_page(web)
+    if state in {"next", "package"}:
+        if package_selection == "BASIS":
+            await _submit_free_basis_package(web)
+        else:
+            await _wait_for_manual_package_submission(web)
+    else:
+        await _click_final_submit_button(web)
+    try:
+        await web.web_sleep()
+    except (TimeoutError, ProtocolException) as ex:
+        raise PublishSubmissionUncertainError(_("submission may have succeeded before failure")) from ex
 
 
 _UPSELL_SKIP_LABEL_SELECTORS:Final[tuple[tuple[By, str], ...]] = (
@@ -317,6 +537,7 @@ async def submit_and_confirm_ad(
     *,
     captcha_config:CaptchaConfig,
     root_url:str,
+    package_selection:Literal["BASIS", "MANUAL"] = "MANUAL",
     known_published_ad_ids:frozenset[int] | None = None,
 ) -> int:
     """Submit the ad form, handle post-submit dialogs, wait for confirmation,
@@ -327,6 +548,8 @@ async def submit_and_confirm_ad(
 
     Raises:
         AdFormValidationError: The form explicitly rejected the submitted values.
+        ManualPackageSelectionRequiredError: Package selection requires an
+            interactive terminal before any final publication attempt.
         PublishSubmissionUncertainError: The submission may have succeeded
             but the ad ID could not be recovered.
         RuntimeError: An internal invariant was violated (ad_id is None
@@ -351,10 +574,10 @@ async def submit_and_confirm_ad(
     #############################
     # submit
     #############################
-    # Click is retryable — no submission can have occurred before this point.
+    # Button discovery is retryable; the final click runs once outside polling.
     # Edit page uses 'Änderungen speichern' or 'Anzeige speichern'; publish page uses 'Anzeige aufgeben'
     pre_submit_referrer = str(await web.web_execute("document.referrer") or "")
-    await _click_submit_button(web)
+    await _click_submit_button(web, package_selection = package_selection)
 
     # After the first click, only explicit form rejection proves submission failed.
     ad_id:int | None = None
