@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     shm_size: 512m
     stop_grace_period: 30s
+    ports:
+      - "${BROWSER_UI_BIND:-127.0.0.1}:6080:6080"
     environment:
       TZ: Europe/Berlin
       CHECK_INTERVAL_SECONDS: "86400"

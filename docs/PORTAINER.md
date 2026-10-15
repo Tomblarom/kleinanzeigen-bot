@@ -12,8 +12,8 @@ The Portainer stack is `kleinanzeigen-bot` on `ari-dock` (environment 3). It use
 a tested image from this fork, pinned by digest, and a named `bot-data` volume.
 The GHCR image is public, matching the public fork. Only application source and
 dependencies are included; credentials, ads and browser profiles stay in the volume.
-It exposes no web interface or network port. Use the container console in Portainer
-(`/bin/bash`) and its logs for setup and operation.
+Use the container console in Portainer (`/bin/bash`) and its logs for operation.
+An on-demand noVNC desktop on port 6080 supports manual login and SMS verification.
 
 ## Initial setup
 
@@ -42,6 +42,42 @@ The configured CAPTCHA handling waits and retries; it does not solve challenges.
 See upstream [browser troubleshooting](BROWSER_TROUBLESHOOTING.md) for headed
 browser setup when manual interaction is required. Account login and live
 republishing cannot be verified until your account and ads are configured.
+
+## Manual login with a visible browser
+
+The image includes Chromium, a virtual display and noVNC. The desktop only runs
+while `browser-login` is active. Compose binds port 6080 to loopback by default;
+for access from your LAN, set the stack variable `BROWSER_UI_BIND` to the Docker
+host's LAN address (on ari-dock: `10.0.0.33`). Keep this port on your trusted LAN:
+the HTTP desktop connection is unencrypted. Do not forward it to the internet.
+
+1. In the container console run:
+
+   ```bash
+   rm -f /mnt/data/automation.enabled
+   browser-login
+   ```
+
+   On first use, choose and confirm a separate VNC password. VNC uses only eight
+   characters; do not reuse your Kleinanzeigen password. The VNC password file
+   persists in `/mnt/data/.vnc/passwd`. Keep the console open during login.
+2. Open `http://10.0.0.33:6080/vnc.html` on your computer, connect, and enter the
+   VNC password. In the displayed Chromium window, visit Kleinanzeigen and log in
+   manually. Complete SMS verification there; do not send the code in chat.
+3. Close Chromium using its window close button. This stops the desktop and
+   releases the shared browser-profile lock. Closing the noVNC tab alone does not
+   stop Chromium. `Ctrl+C` in the container console also ends the desktop session.
+4. In the container console run `bot download --ads=all`, then `bot verify` and
+   `bot status`. The bot reuses the configured browser profile. Its automated runs
+   remain headless. Only after reviewing the ads, enable automation again with
+   `touch /mnt/data/automation.enabled`.
+
+The helper uses `browser.user_data_dir` and `browser.profile_name` from the config;
+an explicit `--user-data-dir=...` browser argument takes precedence. Keep
+`browser.use_private_window: false` so bot runs reuse the saved login. A manual
+login does not guarantee that the site accepts subsequent automated requests.
+To change the VNC password while the desktop is stopped, run
+`x11vnc -storepasswd /mnt/data/.vnc/passwd`.
 
 ## Operation and changes
 
