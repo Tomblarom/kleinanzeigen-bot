@@ -62,6 +62,8 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         self.command = "help"
         self.ads_selector = "due"
         self._ads_selector_explicit:bool = False
+        self.online = False
+        self.dry_run = False
         self.keep_old_ads = False
 
         # Ensure the attribute always exists on the bot object so that
@@ -95,6 +97,8 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         self.command = parsed.command
         self.ads_selector = parsed.ads_selector
         self._ads_selector_explicit = parsed.ads_selector_explicit
+        self.online = parsed.online
+        self.dry_run = parsed.dry_run
         self.keep_old_ads = parsed.keep_old_ads
         self._preserve_local_settings = parsed.preserve_local_settings
         self._config_arg = parsed.config_arg
@@ -365,6 +369,13 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 sys.exit(2)
             LOG.info("Extending all ads within 8-day window...")
             self.ads_selector = "all"
+
+        if self.online:
+            await self._open_logged_in_browser()
+            await extend_flow.extend_online_ads(
+                self, self.root_url, selector = self.ads_selector, dry_run = self.dry_run,
+            )
+            return
 
         if ads := self.load_ads():
             await self._open_logged_in_browser()

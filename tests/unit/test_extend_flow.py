@@ -5,17 +5,20 @@
 
 import json
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from kleinanzeigen_bot import extend_flow, runtime_config
 from kleinanzeigen_bot.app import KleinanzeigenBot
 from kleinanzeigen_bot.model.ad_model import Ad
+from kleinanzeigen_bot.published_ads import PublishedAdsFetchIncompleteError
 from kleinanzeigen_bot.utils import dicts, misc, xdg_paths
+from kleinanzeigen_bot.utils.exceptions import AdBatchError
 
 
 @pytest.fixture
@@ -86,6 +89,26 @@ class TestExtendCommand:
             await test_bot.run(["script.py", "extend", "--ads=12345,67890"])
             assert test_bot.command == "extend"
             assert test_bot.ads_selector == "12345,67890"
+
+    @pytest.mark.asyncio
+    async def test_online_command_does_not_load_local_ads(self, test_bot:KleinanzeigenBot, tmp_path:Path) -> None:
+        workspace = xdg_paths.Workspace.for_config(tmp_path / "config.yaml", "kleinanzeigen-bot")
+        with (
+            patch("kleinanzeigen_bot.runtime_config.resolve_workspace", return_value = workspace),
+            patch(
+                "kleinanzeigen_bot.runtime_config.load_config",
+                return_value = runtime_config.RuntimeState(config = test_bot.config, categories = {}, timing_collector = None),
+            ),
+            patch("kleinanzeigen_bot.runtime_config.configure_file_logging", return_value = None),
+            patch("kleinanzeigen_bot.runtime_config.apply_browser_config"),
+            patch.object(test_bot, "load_ads") as load,
+            patch.object(test_bot, "_open_logged_in_browser", new_callable = AsyncMock),
+            patch("kleinanzeigen_bot.update_checker.UpdateChecker"),
+            patch("kleinanzeigen_bot.extend_flow.extend_online_ads", new_callable = AsyncMock) as extend,
+        ):
+            await test_bot.run(["script.py", "extend", "--online", "--dry-run"])
+            load.assert_not_called()
+            extend.assert_awaited_once_with(test_bot, test_bot.root_url, selector = "all", dry_run = True)
 
 
 class TestExtendAdsMethod:
@@ -508,3 +531,84 @@ class TestExtendEdgeCases:
 
             # Verify extend_ad was called (date was parsed correctly)
             mock_extend_ad.assert_called_once()
+
+
+class TestOnlineExtension:
+    """Account mode is independent of local ad configuration and confirms results."""
+
+    @pytest.mark.parametrize("offset", [-1, 0, 8, 9])
+    def test_date_window(self, offset:int) -> None:
+        today = datetime(2026, 10, 15).date()  # noqa: DTZ001
+        ad = {"id": "1", "state": "active", "endDate": (today + timedelta(days = offset)).strftime("%d.%m.%Y")}
+        selected = extend_flow.select_online_ads([ad, ad], today = today, selector = "all")
+        assert list(selected) == ([1] if 0 <= offset <= 8 else [])  # noqa: PLR2004
+
+    def test_invalid_and_inactive_ads(self) -> None:
+        today = datetime(2026, 10, 15).date()  # noqa: DTZ001
+        ads = [{"id": value, "state": "active", "endDate": "15.10.2026"} for value in [None, True, -1, "bad", 1.2]]
+        ads += [{"id": 1, "state": state, "endDate": "15.10.2026"} for state in ["paused", "inactive"]]
+        ads += [{"id": 2, "state": "active", "endDate": value} for value in [None, "bad", 123]]
+        assert not extend_flow.select_online_ads(ads, today = today, selector = "all")
+
+    def test_numeric_selector(self) -> None:
+        today = datetime(2026, 10, 15).date()  # noqa: DTZ001
+        ads = [{"id": value, "state": "active", "endDate": "15.10.2026"} for value in [1, 2]]
+        assert list(extend_flow.select_online_ads(ads, today = today, selector = "2")) == [2]
+
+    @pytest.mark.asyncio
+    async def test_dry_run_uses_berlin_date(self, test_bot:KleinanzeigenBot) -> None:
+        # Berlin is already on the 16th; the UTC date is still the 15th.
+        ads = [{"id": 1, "state": "active", "endDate": "24.10.2026"}]
+        with (
+            patch("kleinanzeigen_bot.extend_flow.published_ads.fetch_published_ads", new_callable = AsyncMock, return_value = ads),
+            patch("kleinanzeigen_bot.extend_flow._misc.now", return_value = datetime(2026, 10, 15, 23, tzinfo = UTC)),
+            patch.object(test_bot, "navigate_paginated_ad_overview", new_callable = AsyncMock) as navigate,
+            patch("kleinanzeigen_bot.extend_flow.LOG.info") as info,
+        ):
+            await extend_flow.extend_online_ads(test_bot, test_bot.root_url, dry_run = True)
+            navigate.assert_not_called()
+            assert any(call.args[-1] == 1 for call in info.call_args_list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("confirmed", [True, False])
+    async def test_confirms_expiry_and_reports_partial_failure(self, test_bot:KleinanzeigenBot, confirmed:bool) -> None:
+        today = misc.now().astimezone(ZoneInfo("Europe/Berlin")).date()
+        ads = [{"id": value, "state": "active", "endDate": today.strftime("%d.%m.%Y")} for value in [1, 2]]
+        after = [dict(ad, endDate = (today + timedelta(days = 60 if confirmed or ad["id"] == 1 else 0)).strftime("%d.%m.%Y")) for ad in ads]
+
+        async def navigate(callback:Callable[[int], Awaitable[bool]], page_url:str) -> None:  # noqa: ARG001
+            for page in [1, 2]:
+                if await callback(page):
+                    break
+
+        with (
+            patch("kleinanzeigen_bot.extend_flow.published_ads.fetch_published_ads", new_callable = AsyncMock, side_effect = [ads, after]),
+            patch.object(test_bot, "navigate_paginated_ad_overview", side_effect = navigate),
+            patch.object(
+                test_bot, "web_find_all", new_callable = AsyncMock,
+                side_effect = [[MagicMock(attrs = {"data-adid": "1"})], [MagicMock(attrs = {"data-adid": "2"})]],
+            ),
+            patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = AsyncMock()),
+            patch.object(test_bot, "web_click", new_callable = AsyncMock),
+            patch.object(test_bot, "web_sleep", new_callable = AsyncMock),
+            patch("kleinanzeigen_bot.extend_flow._dicts.save_dict") as save,
+        ):
+            if confirmed:
+                await extend_flow.extend_online_ads(test_bot, test_bot.root_url)
+            else:
+                with pytest.raises(AdBatchError):
+                    await extend_flow.extend_online_ads(test_bot, test_bot.root_url)
+            save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_incomplete_fetch_never_clicks(self, test_bot:KleinanzeigenBot) -> None:
+        with (
+            patch(
+                "kleinanzeigen_bot.extend_flow.published_ads.fetch_published_ads",
+                new_callable = AsyncMock, side_effect = PublishedAdsFetchIncompleteError("incomplete"),
+            ),
+            patch.object(test_bot, "web_find", new_callable = AsyncMock) as find,
+        ):
+            with pytest.raises(PublishedAdsFetchIncompleteError):
+                await extend_flow.extend_online_ads(test_bot, test_bot.root_url)
+            find.assert_not_called()

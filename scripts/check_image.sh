@@ -102,26 +102,31 @@ docker exec "$container" bash -euc '
     exit 1
   fi
 '
-if docker run --rm --network=none -e CHECK_INTERVAL_SECONDS=0 "$image"; then
-  echo 'The scheduler accepted an invalid interval.' >&2
-  exit 1
-fi
+# Force a due persisted plan and run the real scheduler with an offline fake bot.
 docker run --rm --network=none --entrypoint bash "$image" -euc '
   mkdir -p /tmp/offline-bin
   cat > /tmp/offline-bin/bot <<"BOT"
 #!/usr/bin/env bash
 echo "$*" >> /mnt/data/commands
-if [[ $1 == verify ]]; then exit "$BOT_VERIFY_EXIT"; fi
+exit 0
 BOT
   chmod +x /tmp/offline-bin/bot
   export PATH="/tmp/offline-bin:$PATH"
   touch /mnt/data/automation.enabled
-  export BOT_VERIFY_EXIT=1
-  timeout 3 /opt/scheduler.sh || test "$?" = 124
-  test "$(cat /mnt/data/commands)" = verify
-  : > /mnt/data/commands
-  export BOT_VERIFY_EXIT=0
-  timeout 3 /opt/scheduler.sh || test "$?" = 124
-  grep -qx "verify" /mnt/data/commands
-  grep -qx "publish --ads=due" /mnt/data/commands
+  python - <<"PYTHON"
+from datetime import timedelta
+from pathlib import Path
+from kleinanzeigen_bot.automation_schedule import BERLIN, Scheduler, new_schedule, save_schedule
+from kleinanzeigen_bot.utils.misc import now
+root = Path("/mnt/data")
+state = root / ".automation-schedule.json"
+test_now = now().astimezone(BERLIN).replace(hour=18, minute=0, second=0, microsecond=0)
+plan = new_schedule(test_now)
+plan.next_attempt = (test_now - timedelta(seconds=1)).isoformat()
+save_schedule(state, plan)
+scheduler = Scheduler(root)
+assert scheduler.tick(test_now).status == "complete"
+assert scheduler.tick(test_now).status == "complete"
+assert (root / "commands").read_text().splitlines() == ["extend --online --ads=all"]
+PYTHON
 '

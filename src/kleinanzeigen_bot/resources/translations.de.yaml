@@ -30,14 +30,15 @@ kleinanzeigen_bot/captcha_flow.py:
 #################################################
 kleinanzeigen_bot/cli.py:
 #################################################
-  parse_args:
-    "Use --help to display available options.": "Mit --help können die verfügbaren Optionen angezeigt werden."
-    "Unknown command: %s": "Unbekannter Befehl: %s"
-    "More than one command given: %s": "Mehr als ein Befehl angegeben: %s"
-    "Invalid --workspace-mode '%s'. Use 'portable' or 'xdg'.": "Ungültiger --workspace-mode '%s'. Verwenden Sie 'portable' oder 'xdg'."
   _warn_unpatched_nodriver:
     ? "nodriver CDP re-attach patch not found: installed nodriver may miss the flat-mode fix. Plain pip installs skip the PDM post_install hook; run `pdm install` from a source checkout or `python scripts/fix_nodriver.py` from the repository. Symptom: repeated `Re-attaching CDP session after -32601`."
     : "nodriver CDP Re-Attach-Patch nicht gefunden: installiertes nodriver hat möglicherweise nicht den Flat-Mode-Fix. Reine pip-Installationen überspringen den PDM post_install-Hook; führen Sie `pdm install` in einem Quell-Checkout aus oder `python scripts/fix_nodriver.py` aus dem Repository. Symptom: wiederholtes `Re-attaching CDP session after -32601`."
+  parse_args:
+    "--online requires extend; --dry-run requires extend --online.": "--online erfordert extend; --dry-run erfordert extend --online."
+    "Use --help to display available options.": "Mit --help können die verfügbaren Optionen angezeigt werden."
+    "More than one command given: %s": "Mehr als ein Befehl angegeben: %s"
+    "Unknown command: %s": "Unbekannter Befehl: %s"
+    "Invalid --workspace-mode '%s'. Use 'portable' or 'xdg'.": "Ungültiger --workspace-mode '%s'. Verwenden Sie 'portable' oder 'xdg'."
 
 #################################################
 kleinanzeigen_bot/runtime_config.py:
@@ -506,29 +507,41 @@ kleinanzeigen_bot/extend_flow.py:
 #################################################
   extend_ads:
     "############################################": "############################################"
+    "DONE: Extended %s": "FERTIG: %s verlängert"
     "No ads need extension at this time.": "Keine Anzeigen müssen derzeit verlängert werden."
     "DONE: No ads extended.": "FERTIG: Keine Anzeigen verlängert."
-    "DONE: Extended %s": "FERTIG: %s verlängert"
     "ad": "Anzeige"
     " -> SKIPPED: ad '%s' is not published yet": " -> ÜBERSPRUNGEN: Anzeige '%s' ist noch nicht veröffentlicht"
     " -> SKIPPED: ad '%s' (ID: %s) not found in published ads": " -> ÜBERSPRUNGEN: Anzeige '%s' (ID: %s) nicht gefunden"
     " -> SKIPPED: ad '%s' is not active (state: %s)": " -> ÜBERSPRUNGEN: Anzeige '%s' ist nicht aktiv (Status: %s)"
     " -> SKIPPED: ad '%s' has no endDate in API response": " -> ÜBERSPRUNGEN: Anzeige '%s' hat kein Ablaufdatum in API-Antwort"
-    " -> SKIPPED: ad '%s' has invalid endDate format: %s": " -> ÜBERSPRUNGEN: Anzeige '%s' hat ungültiges Ablaufdatum-Format: %s"
     " -> ad '%s' expires in %d days, will extend": " -> Anzeige '%s' läuft in %d Tagen ab, wird verlängert"
     " -> SKIPPED: ad '%s' expires in %d days (can only extend within 8 days)": " -> ÜBERSPRUNGEN: Anzeige '%s' läuft in %d Tagen ab (Verlängern nur innerhalb von 8 Tagen möglich)"
-
+    " -> SKIPPED: ad '%s' has invalid endDate format: %s": " -> ÜBERSPRUNGEN: Anzeige '%s' hat ungültiges Ablaufdatum-Format: %s"
   _extend_ad:
     "Extending ad '%s' (ID: %s)...": "Verlängere Anzeige '%s' (ID: %s)..."
-    " -> FAILED: Could not find extend button for ad ID %s": " -> FEHLER: 'Verlängern'-Button für Anzeigen-ID %s nicht gefunden"
-    " -> No confirmation dialog found, extension may have completed directly": " -> Kein Bestätigungsdialog gefunden"
     " -> SUCCESS: ad extended with ID %s": " -> ERFOLG: Anzeige mit ID %s verlängert"
-    " -> FAILED: Timeout while extending ad '%s': %s": " -> FEHLER: Zeitüberschreitung beim Verlängern der Anzeige '%s': %s"
     " -> FAILED: Could not persist extension for ad '%s': %s": " -> FEHLER: Verlängerung der Anzeige '%s' konnte nicht gespeichert werden: %s"
-    "Found extend button on page %s": "'Verlängern'-Button auf Seite %s gefunden"
-
+  extend_online_ads:
+    "DONE: Confirmed %d online extensions; %d failed.": "FERTIG: %d Online-Verlängerungen bestätigt; %d fehlgeschlagen."
+    "Selected online ad ID %s: '%s', expires %s": "Online-Anzeige mit ID %s ausgewählt: '%s', läuft am %s ab"
+    "DRY RUN: %d online ads eligible for extension; no ads changed.": "PROBELAUF: %d Online-Anzeigen können verlängert werden; keine Anzeigen geändert."
+    "No ads need extension at this time.": "Keine Anzeigen müssen derzeit verlängert werden."
+    "Unconfirmed online extension IDs: %s": "Nicht bestätigte Online-Verlängerungen für IDs: %s"
+    "Some online extensions could not be confirmed.": "Einige Online-Verlängerungen konnten nicht bestätigt werden."
+    " -> SUCCESS: online ad ID %s extended until %s": " -> ERFOLGREICH: Online-Anzeige mit ID %s bis %s verlängert"
   report_missing:
     " -> FAILED: Could not find extend button for ad ID %s": " -> FEHLER: 'Verlängern'-Button für Anzeigen-ID %s nicht gefunden"
+  _click_extend_button:
+    "Found extend button on page %s": "'Verlängern'-Button auf Seite %s gefunden"
+    " -> FAILED: Timeout while extending ad ID %s: %s": " -> FEHLGESCHLAGEN: Zeitüberschreitung beim Verlängern der Anzeige mit ID %s: %s"
+    " -> FAILED: Could not find extend button for ad ID %s": " -> FEHLER: 'Verlängern'-Button für Anzeigen-ID %s nicht gefunden"
+    " -> No confirmation dialog found, extension may have completed directly": " -> Kein Bestätigungsdialog gefunden"
+  _online_end_date:
+    " -> SKIPPED: ad ID %s has invalid or missing endDate: %s": " -> ÜBERSPRUNGEN: Anzeige mit ID %s hat ein ungültiges oder fehlendes Ablaufdatum: %s"
+  process_page:
+    "Extending online ad ID %s: '%s'...": "Verlängere Online-Anzeige mit ID %s: '%s'..."
+    " -> FAILED: Could not extend online ad ID %s: %s": " -> FEHLGESCHLAGEN: Online-Anzeige mit ID %s konnte nicht verlängert werden: %s"
 
 #################################################
 kleinanzeigen_bot/reserve_flow.py:
@@ -1311,3 +1324,19 @@ kleinanzeigen_bot/utils/xdg_paths.py:
     "XDG footprint hits": "Gefundene XDG-Spuren"
     "Detected both portable and XDG footprints.": "Sowohl portable als auch XDG-Spuren wurden gefunden."
     "Detected neither portable nor XDG footprints.": "Weder portable noch XDG-Spuren wurden gefunden."
+
+#################################################
+kleinanzeigen_bot/automation_schedule.py:
+#################################################
+  load_schedule:
+    "Next account-extension run: %s": "Nächster Durchlauf zur Anzeigenverlängerung: %s"
+    "Invalid scheduler state; drawing a new afternoon start.": "Ungültiger Scheduler-Zustand; eine neue Startzeit am Nachmittag wird gewählt."
+  tick:
+    "Starting scheduled account extensions.": "Geplante Anzeigenverlängerung wird gestartet."
+    "Daily account-extension run completed.": "Tägliche Anzeigenverlängerung abgeschlossen."
+    "Account extensions incomplete; next retry: %s": "Anzeigenverlängerung unvollständig; nächster Versuch: %s"
+    "Could not start account extensions: %s": "Anzeigenverlängerung konnte nicht gestartet werden: %s"
+  run:
+    "Scheduler ready. Enable account extensions with /mnt/data/automation.enabled.": "Scheduler bereit. Anzeigenverlängerung mit /mnt/data/automation.enabled aktivieren."
+  run_batch:
+    "Account-extension run exceeded 30 minutes; stopping its process group.": "Anzeigenverlängerung dauert länger als 30 Minuten; die Prozessgruppe wird beendet."

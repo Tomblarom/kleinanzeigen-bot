@@ -49,6 +49,7 @@ dependencies = [
   "wcmatch",
   "sanitize-filename>=1.2.0",
   "requests>=2.34.2",
+  "tzdata",
 ]
 
 [dependency-groups] # https://peps.python.org/pep-0735/

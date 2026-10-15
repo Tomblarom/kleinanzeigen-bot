@@ -137,6 +137,10 @@ ad_defaults:
 ```
 
 - `ad_defaults.republication_interval` controls when ads become due for republishing.
+- `extend --online` extends active account listings within the eight-day window,
+  independently of local ad files and their settings. Add `--dry-run` to preview
+  without changing listings. See [Portainer deployment](PORTAINER.md) for this
+  fork's daily afternoon extension scheduler.
 - Automatic price reductions are always evaluated during `publish` runs, and they also apply during `update` runs when `on_update: true` is set (using `delay_days` but ignoring `delay_reposts`).
 - Reductions do not run in the background between runs.
 - When auto price reduction is enabled, each `publish` (and optionally `update`) run logs the reduction decision.

@@ -374,3 +374,16 @@ class TestNodriverPatchGuard:
             cli._warn_unpatched_nodriver()  # noqa: SLF001
         assert "nodriver CDP re-attach patch not found" not in caplog.text
         assert cli._warned_nodriver_patch[0] is False  # noqa: SLF001
+
+
+@pytest.mark.parametrize("args", [["publish", "--online"], ["extend", "--dry-run"], ["download", "--online", "--dry-run"]])
+def test_online_options_reject_other_commands(args:list[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.parse_args(["script.py", *args])
+    assert error.value.code == 2
+
+
+def test_online_preview_options() -> None:
+    parsed = cli.parse_args(["script.py", "extend", "--online", "--dry-run"])
+    assert parsed.online
+    assert parsed.dry_run
