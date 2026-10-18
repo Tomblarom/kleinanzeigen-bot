@@ -52,8 +52,6 @@ class ParsedArgs:
     command:str = "help"
     ads_selector:str = "due"
     ads_selector_explicit:bool = False
-    online:bool = False
-    dry_run:bool = False
     keep_old_ads:bool = False
     preserve_local_settings:bool = False
     config_arg:str | None = None
@@ -200,8 +198,6 @@ def help_text(*, executable:str | None = None, language:str | None = None) -> st
                     * all: Stellt alle passenden Anzeigen um
                     * <id(s)>: Gibt bestimmte Anzeigen-IDs an, z. B. "--ads=1,2,3"
                     * Hinweis: Anzeigen, die bereits im Zielzustand sind, werden übersprungen.
-              --online          - Verlängert aktive Online-Anzeigen unabhängig von lokalen Dateien (extend)
-              --dry-run         - Zeigt die Auswahl ohne Verlängerung (extend --online)
               --force           - Alias für '--ads=all'
               --keep-old        - Verhindert das Löschen alter Anzeigen bei erneuter Veröffentlichung
               --preserve-local-settings - Erzwingt das Beibehalten lokaler Einstellungen bei erneutem Download (überschreibt config-Wert false)
@@ -267,8 +263,6 @@ def help_text(*, executable:str | None = None, language:str | None = None) -> st
                 * all: switch all eligible ads
                 * <id(s)>: specify ad IDs, e.g. "--ads=1,2,3"
                 * Note: ads already in the target state are skipped.
-          --online          - extend active online ads independently of local files (extend)
-          --dry-run         - preview the selection without extending (extend --online)
           --force           - alias for '--ads=all'
           --keep-old        - don't delete old ads on republication
           --preserve-local-settings - force-enable preservation of local-only settings on re-download (overrides config value of false)
@@ -292,7 +286,7 @@ def parse_args(args:Sequence[str]) -> ParsedArgs:
         options, arguments = getopt.gnu_getopt(
             list(args)[1:],
             "hv",
-            ["ads=", "config=", "online", "dry-run", "force", "help", "keep-old", "logfile=", "lang=", "preserve-local-settings", "verbose", "workspace-mode="],
+            ["ads=", "config=", "force", "help", "keep-old", "logfile=", "lang=", "preserve-local-settings", "verbose", "workspace-mode="],
         )
     except getopt.error as ex:
         LOG.error(ex.msg)
@@ -322,10 +316,6 @@ def parse_args(args:Sequence[str]) -> ParsedArgs:
             case "--force":
                 parsed.ads_selector = "all"
                 parsed.ads_selector_explicit = True
-            case "--online":
-                parsed.online = True
-            case "--dry-run":
-                parsed.dry_run = True
             case "--keep-old":
                 parsed.keep_old_ads = True
             case "--preserve-local-settings":
@@ -353,10 +343,6 @@ def parse_args(args:Sequence[str]) -> ParsedArgs:
         case _:
             LOG.error("More than one command given: %s", arguments)
             sys.exit(2)
-
-    if (parsed.online and parsed.command != "extend") or (parsed.dry_run and not (parsed.command == "extend" and parsed.online)):
-        LOG.error("--online requires extend; --dry-run requires extend --online.")
-        sys.exit(2)
 
     return parsed
 

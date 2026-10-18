@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kleinanzeigen_bot import LOG
+from kleinanzeigen_bot import LOG, publishing_submission
 from kleinanzeigen_bot.app import KleinanzeigenBot
 from kleinanzeigen_bot.model.ad_model import Ad, AdUpdateStrategy
 from kleinanzeigen_bot.model.config_model import PublishingConfig
@@ -43,7 +43,7 @@ from kleinanzeigen_bot.publishing_form import (
     set_special_attributes,
     upload_images,
 )
-from kleinanzeigen_bot.utils.exceptions import CategoryResolutionError
+from kleinanzeigen_bot.utils.exceptions import CategoryResolutionError, PageScriptError
 from kleinanzeigen_bot.utils.web_scraping_mixin import By, Element
 
 
@@ -70,16 +70,36 @@ class TestKleinanzeigenBotContactLocationHardening:
         """Reading city selection prefers the live input value over the selected option."""
         city_input = MagicMock(spec = Element)
         city_input.local_name = "input"
-        city_input.apply = AsyncMock(return_value = "Live City")
 
         with (
             patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_input),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, return_value = "Live City"),
             patch.object(test_bot, "web_text", new_callable = AsyncMock) as web_text_mock,
         ):
             selected = await read_city_selection_text(test_bot)
 
         assert selected == "Live City"
         web_text_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_read_city_selection_text_ignores_failing_page_scripts(self, test_bot:KleinanzeigenBot) -> None:
+        """A page script that throws must not abort the lookup; the selected option is still used."""
+        city_input = MagicMock(spec = Element)
+        city_input.local_name = "input"
+
+        with (
+            patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_input),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, side_effect = PageScriptError("Error: element is gone")),
+            patch.object(test_bot, "web_text", new_callable = AsyncMock, return_value = "Selected City"),
+        ):
+            assert await read_city_selection_text(test_bot) == "Selected City"
+
+        with (
+            patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_input),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, side_effect = PageScriptError("Error: element is gone")),
+            patch.object(test_bot, "web_text", new_callable = AsyncMock, side_effect = TimeoutError("missing")),
+        ):
+            assert await read_city_selection_text(test_bot) is None
 
     @pytest.mark.asyncio
     async def test_read_city_selection_text_uses_selected_option_text(self, test_bot:KleinanzeigenBot) -> None:
@@ -89,23 +109,24 @@ class TestKleinanzeigenBotContactLocationHardening:
 
         with (
             patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_button),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock) as web_apply_mock,
             patch.object(test_bot, "web_text", new_callable = AsyncMock, return_value = "Selected City") as web_text_mock,
         ):
             selected = await read_city_selection_text(test_bot)
 
         assert selected == "Selected City"
         web_text_mock.assert_awaited_once()
-        city_button.apply.assert_not_called()
+        web_apply_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_read_city_selection_text_falls_back_to_element_text(self, test_bot:KleinanzeigenBot) -> None:
         """Reading city selection falls back to element text when no input or option is found."""
         city_button = MagicMock(spec = Element)
         city_button.local_name = "button"
-        city_button.apply = AsyncMock(return_value = "Button City")
 
         with (
             patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_button),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, return_value = "Button City"),
             patch.object(test_bot, "web_text", new_callable = AsyncMock, side_effect = TimeoutError("missing selected option")),
         ):
             selected = await read_city_selection_text(test_bot)
@@ -435,10 +456,10 @@ class TestKleinanzeigenBotContactLocationHardening:
         """When selected-option and textContent both fail, fall back to web_text(By.ID, 'ad-city')."""
         city_button = MagicMock(spec = Element)
         city_button.local_name = "button"
-        city_button.apply = AsyncMock(return_value = "")  # empty textContent
 
         with (
             patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_button),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, return_value = ""),
             patch.object(test_bot, "web_text", new_callable = AsyncMock, side_effect = [
                 TimeoutError("no selected option"),
                 "Fallback City",
@@ -453,10 +474,10 @@ class TestKleinanzeigenBotContactLocationHardening:
         """When every lookup strategy fails, return None."""
         city_button = MagicMock(spec = Element)
         city_button.local_name = "button"
-        city_button.apply = AsyncMock(return_value = "")  # empty textContent
 
         with (
             patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_button),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, return_value = ""),
             patch.object(test_bot, "web_text", new_callable = AsyncMock, side_effect = [
                 TimeoutError("no selected option"),
                 TimeoutError("ad-city also missing"),
@@ -474,10 +495,10 @@ class TestKleinanzeigenBotContactLocationHardening:
         """Input element with empty apply value, then both web_text calls time out — return None."""
         city_input = MagicMock(spec = Element)
         city_input.local_name = "input"
-        city_input.apply = AsyncMock(return_value = "   ")  # blank after trim
 
         with (
             patch.object(test_bot, "web_find", new_callable = AsyncMock, return_value = city_input),
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, return_value = "   "),
             patch.object(test_bot, "web_text", new_callable = AsyncMock, side_effect = [
                 TimeoutError("no selected option"),
                 TimeoutError("ad-city missing"),
@@ -628,7 +649,6 @@ class TestCategoryProbeBehavior:
     async def test_set_category_uses_probe_for_auto_selected_marker(self, test_bot:KleinanzeigenBot) -> None:
         """In _set_category, category marker lookup should go through web_probe."""
         category_marker = MagicMock()
-        category_marker.apply = AsyncMock(return_value = "Auto Category")
 
         async def probe(selector_type:Any, selector_value:str, **_kwargs:Any) -> Any:
             if selector_value == "ad-category-path":
@@ -637,6 +657,7 @@ class TestCategoryProbeBehavior:
 
         with (
             patch.object(test_bot, "web_probe", new_callable = AsyncMock, side_effect = probe) as mock_probe,
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, return_value = "Auto Category"),
             patch.object(test_bot, "web_click", new_callable = AsyncMock),
             patch.object(test_bot, "web_find", new_callable = AsyncMock),
             patch.object(test_bot, "web_open", new_callable = AsyncMock),
@@ -740,9 +761,7 @@ class TestCategorySuggestionPicker:
     def _picker_probe_factory(picker_present:bool) -> Callable[..., Any]:
         async def probe(selector_type:Any, selector_value:str, **_kwargs:Any) -> Any:
             if selector_value == "ad-category-path":
-                marker = MagicMock()
-                marker.apply = AsyncMock(return_value = "")
-                return marker
+                return MagicMock()
             if selector_value == "ad-category-picker":
                 return MagicMock() if picker_present else None
             return None
@@ -2616,7 +2635,7 @@ class TestShippingOptionsDialog:
             if "window.location.href" in script:
                 return test_bot.page.url  # Return confirmation URL for ad_id extraction
             # Submit button JS click returns True (button found and clicked)
-            if "querySelectorAll('button')" in script:
+            if script in {publishing_submission._submit_button_script("inspect"), publishing_submission._submit_button_script("submit")}:
                 return True
             return None
 
@@ -2638,7 +2657,6 @@ class TestShippingOptionsDialog:
         fertig_mock.click = AsyncMock()
 
         category_path_elem = MagicMock()
-        category_path_elem.apply = AsyncMock(return_value = "Test Category")
 
         # Mock the necessary web interaction methods
         with (
@@ -2646,6 +2664,7 @@ class TestShippingOptionsDialog:
             patch.object(test_bot, "web_click", new_callable = AsyncMock),
             patch.object(test_bot, "web_find", new_callable = AsyncMock) as mock_find,
             patch.object(test_bot, "web_probe", new_callable = AsyncMock) as mock_probe,
+            patch.object(test_bot, "web_apply", new_callable = AsyncMock, return_value = "Test Category"),
             patch.object(test_bot, "web_select", new_callable = AsyncMock),
             patch.object(test_bot, "web_input", new_callable = AsyncMock),
             patch.object(test_bot, "web_open", new_callable = AsyncMock),
@@ -2871,39 +2890,6 @@ class TestSelectButtonCombobox:
         # Stable contract: a single browser script receives safely quoted inputs.
         assert json.dumps(elem_id) in js
         assert json.dumps(option_value) in js
-
-    @pytest.mark.asyncio
-    async def test_select_button_combobox_js_contains_full_click_sequence(
-        self,
-        test_bot:KleinanzeigenBot,
-    ) -> None:
-        """The injected JS must dispatch a full click sequence (including mouseup/click)
-        and include document-level listbox search for portal-rendered menus."""
-        elem_id = "my-combobox-id"
-        option_value = "option_value"
-
-        with (
-            patch.object(test_bot, "web_execute", new_callable = AsyncMock, return_value = {"ok": True}) as mock_execute,
-        ):
-            await _select_button_combobox(test_bot, elem_id, option_value)
-
-        assert mock_execute.await_args is not None
-        js = str(mock_execute.await_args.args[0])
-        # Full click sequence: pointerdown + mousedown + mouseup + click
-        assert "PointerEvent('pointerdown'" in js
-        assert "MouseEvent('mousedown'" in js
-        assert "MouseEvent('mouseup'" in js
-        assert "MouseEvent('click'" in js
-        # Scoped portal fallback: aria-controls/owns association first, then visible portal candidates with aria-labelledby
-        assert "btn.getAttribute('aria-controls')" in js
-        assert "document.getElementById(controlledId)" in js
-        assert "btn.getAttribute('aria-owns')" in js
-        assert "document.getElementById(ownedId)" in js
-        assert "document.querySelectorAll('[role=\"listbox\"],[role=\"menu\"]')" in js
-        assert "getBoundingClientRect" in js
-        assert "aria-labelledby" in js
-        # Whitespace normalization in text matching
-        assert ".replace(/\\s+/g,' ').trim()" in js
 
     @pytest.mark.asyncio
     async def test_select_button_combobox_no_options_failure_raises_timeout(

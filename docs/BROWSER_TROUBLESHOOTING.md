@@ -557,6 +557,16 @@ browser:
   suppress_unsupported_flag_warning: false
 ```
 
+#### Docker image: browser desktop
+
+Unless `DISPLAY` is passed in or `VNC_DISABLE=1` is set, the Docker image starts a KasmVNC desktop and runs the bot (and its Chromium) on it. See [Installation using Docker](../README.md#installation-using-docker) for the setup.
+
+- **Cannot open http://localhost:6080**: publish the port (`-p 127.0.0.1:6080:6080`). Bind it to `127.0.0.1` and use an SSH tunnel (`ssh -L 6080:localhost:6080 host`) instead of exposing it to the internet; the connection is plain HTTP.
+- **Forgot the password**: `cat <data dir>/.vnc-password` (generated passwords only), or set `VNC_PASSWORD` to choose your own (at least 6 characters).
+- **GPU**: the log line `Desktop rendering: ...` tells which mode is active. For hardware rendering pass `--device /dev/dri --group-add <render-gid>` (`getent group render`). `GPU_ACCELERATION=on` aborts if no usable render node exists, `off` forces software rendering. Without a GPU, Chromium renders WebGL with SwiftShader.
+- **Permission errors on `/mnt/data`**: the bot runs as the owner of the data directory (`user`, UID 1000, for a new empty one) and as root only if the data directory contains root-owned files from an older image (the log says so). With `docker run --user <uid>:<gid>` make sure that user can write the directory, e.g. `chown -R <uid>:<gid> <data dir>` with the same IDs as in `--user` (`1000:1000` is the built-in `user`).
+- **Sandbox**: Chromium keeps its sandbox when the container allows user namespaces and the bot does not run as root; otherwise it is started with `--no-sandbox` automatically.
+
 ## Configuration Examples
 
 ### Basic working configuration
@@ -653,37 +663,30 @@ curl http://localhost:9222/json/version
 
 Run `kleinanzeigen-bot login --config=/path/to/config.yaml` in an interactive terminal.
 The command opens a visible browser with the same profile as subsequent bot runs.
-It disables private/guest mode and headless arguments for this run, without changing the config file.
+It requires a persistent, visible session and stops with an error otherwise: set `browser.use_private_window: false`
+and remove `--headless`, `--incognito`, `--guest` and `--inprivate` from `browser.arguments`.
 Enter your credentials and complete any CAPTCHA, SMS request ("Code senden"), SMS code entry, or email verification in that browser.
 Then return to the terminal and press ENTER. The bot verifies the configured account and closes the browser to save the session.
 The command never fills credentials, sends SMS, downloads ads, or publishes ads.
 Your configured username must match the account you log into. Normal config validation still applies.
 
-For subsequent commands to reuse the session, set `browser.use_private_window: false` in your config
-and remove any `--incognito`, `--guest`, or `--inprivate` browser arguments. The login command changes
-these settings only for its own run and warns if your config would start a private session later.
 Keep the profile directory persistent and use that same directory for later commands.
 Stop other bot/browser processes using it before starting; Chromium cannot share a profile between simultaneous processes.
 If connecting to an externally managed browser via remote debugging, ensure that browser uses a persistent profile and close it yourself when finished.
 
-### Optional web desktop for Docker and Portainer
+### Docker
 
-The standard Docker image already supports X11 (see the README).
-For a server without a local display, build the optional noVNC image from a bot image containing the `login` command:
+The standard Docker image includes a browser desktop (see the README), so no extra image is needed.
+Stop scheduled bot runs first, mount the data directory containing your config and browser profile, and run `login` with an interactive terminal:
 
 ```bash
-docker build -f docker/manual-login/Dockerfile \
-  --build-arg BOT_IMAGE=ghcr.io/second-hand-friends/kleinanzeigen-bot:preview \
-  -t kleinanzeigen-bot-login .
-
 docker run --rm -it --shm-size=256m \
   -p 127.0.0.1:6080:6080 \
   -v /path/to/bot-data:/mnt/data \
-  kleinanzeigen-bot-login
+  ghcr.io/second-hand-friends/kleinanzeigen-bot:latest login
 ```
 
-Stop scheduled bot runs first. Mount the same data directory (or named volume) containing your config and browser profile.
-For example, set the following in `config.yaml` for both the login container and normal bot container:
+Keep the browser profile persistent and use the same data directory for later runs, for example:
 
 ```yaml
 browser:
@@ -691,24 +694,11 @@ browser:
   use_private_window: false
 ```
 
-Open `http://localhost:6080/vnc.html`, connect, and enter the separate VNC password chosen in the terminal on first use.
-VNC uses only the first eight password characters; use a separate eight-character password, not your account password.
-Complete the login in Chromium, then press ENTER in the container console. The desktop stops when the command completes.
-The VNC password is stored with restricted permissions under `/mnt/data/.vnc/passwd`.
+Open `http://localhost:6080`, sign in as `user` with the password from the container log (or `/mnt/data/.vnc-password`),
+and complete the login in the bot's Chromium. Then press ENTER in the container console. The container ends when the command completes.
 
-For Portainer, first publish this optional image to a registry your Docker host can pull from.
-Create a temporary container with the same data volume and port 6080 published, overriding its entrypoint to
-`/bin/bash -c "sleep infinity"` so it stays available for the console. Do not enable automatic restarts.
-Open an interactive `/bin/bash` container console and run `/opt/manual-login.sh`. Keep that console open until login completes.
-Afterward stop/remove the temporary container while retaining the data volume.
-For a remote host, tunnel port 6080 over SSH, or publish it only on a trusted LAN interface.
-The example binds to localhost; VNC password authentication does not encrypt the desktop traffic.
-Do not expose the desktop to the Internet. Resume normal bot commands after the login process has exited.
-
-To check the optional image offline, run `bash docker/manual-login/check.sh kleinanzeigen-bot-login`.
-The check uses an isolated container with networking disabled, a fake bot, and Chromium on `about:blank`.
-It checks the real desktop, VNC password requirement, terminal input forwarding, and shutdown.
-
+The container needs an interactive terminal (`-it`) to read ENTER; do not run it with an automatic restart policy.
+For a remote host, tunnel port 6080 over SSH or use an HTTPS reverse proxy; the desktop connection is not encrypted.
 
 ## Using an Existing Browser Window
 
@@ -793,5 +783,5 @@ Device verification may first ask you to request a code ("Wir senden dir …", "
 then ask for an already sent code ("Wir haben dir gerade einen 6-stelligen Code …").
 Both stages require manual completion in the browser. The bot pauses for either stage;
 it does not click "Code senden" or read/submit SMS codes. Press ENTER in the terminal
-only after completing verification. For a server/container, use a visible browser via X11
-or the existing-browser setup above. A headless browser cannot display these controls.
+only after completing verification. For a server/container, use the Docker image's browser
+desktop (port 6080), a visible browser via X11 or the existing-browser setup above. A headless browser cannot display these controls.

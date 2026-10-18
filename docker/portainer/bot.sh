@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
 cd /mnt/data
-# Manual commands and scheduled runs must not share a browser session concurrently.
-exec flock --nonblock /mnt/data/.bot.lock python -m kleinanzeigen_bot \
+export VNC_DISABLE=1
+if [[ ${1:-} == login ]]; then export VNC_DISABLE=0; fi
+exec flock --nonblock /mnt/data/.bot.lock /bin/bash /opt/run.sh \
   --workspace-mode=portable --config=/mnt/data/config.yaml "$@"

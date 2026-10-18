@@ -12,8 +12,7 @@ from unittest.mock import patch
 import psutil
 import pytest
 
-from kleinanzeigen_bot import automation_schedule as scheduling
-from kleinanzeigen_bot.utils import misc
+from docker.portainer import automation_schedule as scheduling
 
 
 @pytest.fixture
@@ -51,7 +50,7 @@ def test_daily_completion_or_hourly_retry(tmp_path:Path, afternoon:datetime, suc
     scheduler = scheduling.Scheduler(tmp_path)
     (tmp_path / "automation.enabled").touch()
     save_due_plan(scheduler, afternoon)
-    with patch.object(scheduler, "run_batch", return_value = success) as run, patch.object(misc, "now", return_value = afternoon):
+    with patch.object(scheduler, "run_batch", return_value = success) as run, patch.object(scheduling, "current_time", return_value = afternoon):
         plan = scheduler.tick(afternoon)
         assert plan.status == ("complete" if success else "retry")
         scheduler.tick(afternoon + timedelta(minutes = 59))
@@ -75,7 +74,7 @@ def test_retry_does_not_carry_into_morning(tmp_path:Path, afternoon:datetime) ->
     (tmp_path / "automation.enabled").touch()
     save_due_plan(scheduler, afternoon)
     late = afternoon.replace(hour = 23, minute = 45)
-    with patch.object(scheduler, "run_batch", return_value = False) as run, patch.object(misc, "now", return_value = late):
+    with patch.object(scheduler, "run_batch", return_value = False) as run, patch.object(scheduling, "current_time", return_value = late):
         scheduler.tick(late)
         next_day = late + timedelta(hours = 1)
         assert not scheduler.tick(next_day).due(next_day)
@@ -106,13 +105,13 @@ def test_lock_failure_retries(tmp_path:Path, afternoon:datetime) -> None:
     scheduler = scheduling.Scheduler(tmp_path)
     (tmp_path / "automation.enabled").touch()
     save_due_plan(scheduler, afternoon)
-    with patch.object(scheduler, "run_batch", side_effect = OSError("busy")), patch.object(misc, "now", return_value = afternoon):
+    with patch.object(scheduler, "run_batch", side_effect = OSError("busy")), patch.object(scheduling, "current_time", return_value = afternoon):
         assert scheduler.tick(afternoon).status == "retry"
 
 
 @pytest.mark.skipif(os.name != "posix", reason = "The container scheduler uses POSIX process groups")
 def test_timeout_stops_descendants(tmp_path:Path, monkeypatch:pytest.MonkeyPatch) -> None:
-    command = tmp_path / "bot"
+    command = tmp_path / "account-extend"
     command.write_text(
         f"#!{sys.executable}\n"
         "import subprocess, time\n"
@@ -143,3 +142,14 @@ def test_late_first_activation_schedules_tomorrow(tmp_path:Path, afternoon:datet
         assert scheduler.tick(late) == plan
         assert scheduler.tick(late + timedelta(hours = 10)) == plan
         run.assert_not_called()
+
+
+@pytest.mark.parametrize(("message", "status", "expected"), [
+    ("DONE: Extended 1 ad", 0, True),
+    ("[ERROR] Could not extend ad", 0, False),
+    (" -> FAILED: Could not find extend button", 0, False),
+    ("Authentication failed", 1, False),
+])
+def test_cli_result_detection(tmp_path:Path, message:str, status:int, expected:bool) -> None:
+    scheduler = scheduling.Scheduler(tmp_path)
+    assert scheduler.run_command([sys.executable, "-c", f"print({message!r}); raise SystemExit({status})"]) is expected

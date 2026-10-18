@@ -41,7 +41,7 @@ dependencies = [
   "certifi",
   "colorama",
   "jaraco.text", # required by pkg_resources during runtime
-  "nodriver==0.50.3",
+  "nodriver==0.50.6",
   "platformdirs>=2.1.0",
   "pydantic>=2.11.0",
   "ruamel.yaml",
@@ -49,7 +49,6 @@ dependencies = [
   "wcmatch",
   "sanitize-filename>=1.2.0",
   "requests>=2.34.2",
-  "tzdata",
 ]
 
 [dependency-groups] # https://peps.python.org/pep-0735/
@@ -70,7 +69,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "jsonschema>=4.26.0",
     "actionlint-py>=1.7.12.24",
-    "nodejs-wheel-binaries>=24.19.0",  # runs page scripts in Node.js for integration tests
+    "deno>=2.9.7",  # lints, formats and type-checks src/kleinanzeigen_bot/resources/js
 ]
 
 [project.urls]
@@ -109,17 +108,19 @@ deps                = "pdm list --fields name,version,groups"
 "deps:runtime:tree" = "pdm list --tree --include default"
 
 # format & lint
-format        = { composite = ["format:py", "format:yaml"] }
+format        = { composite = ["format:py", "format:yaml", "format:js"] }
 "format:py"   = { composite = ["format:autopep8", "format:post-autopep8"] }
 "format:autopep8" = "autopep8 --recursive --in-place scripts src tests --verbose"
 "format:post-autopep8" = "python scripts/post_autopep8.py scripts src tests"
 "format:yaml" = "yamlfix scripts/ src/ tests/"
+"format:js"   = "deno fmt src/kleinanzeigen_bot/resources/js"
 
-lint = { composite = ["lint:ruff", "lint:mypy", "lint:pyright", "lint:actions"] }
+lint = { composite = ["lint:ruff", "lint:mypy", "lint:pyright", "lint:actions", "lint:js"] }
 "lint:ruff"    = { shell = "echo [ruff] && ruff check --preview" }
 "lint:mypy"    = { shell = "echo [mypy] && mypy" }
 "lint:pyright" = { shell = "echo [pyright] && basedpyright" }
 "lint:actions" = { shell = "echo [actionlint] && actionlint" }
+"lint:js"      = { shell = "echo [deno] && deno lint src/kleinanzeigen_bot/resources/js && deno fmt --check src/kleinanzeigen_bot/resources/js && deno check src/kleinanzeigen_bot/resources/js" }
 "lint:fix"     = { shell = "echo [ruff:fix] && ruff check --preview --fix" }
 
 # tests

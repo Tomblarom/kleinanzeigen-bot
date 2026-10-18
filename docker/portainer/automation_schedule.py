@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: © Tomblarom and contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-ArtifactOfProjectHomePage: https://github.com/Second-Hand-Friends/kleinanzeigen-bot/
+# ruff: noqa: INP001
 """Persistent daily account-extension scheduler for the Portainer image."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
+import re
 import signal
 import subprocess  # noqa: S404 — trusted local bot command, never a shell
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -18,16 +22,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from .utils import loggers, misc
-
 if TYPE_CHECKING:
     from types import FrameType
 
-LOG = loggers.get_logger(__name__)
+LOG = logging.getLogger(__name__)
 BERLIN = ZoneInfo("Europe/Berlin")
 RUN_TIMEOUT = 30 * 60
 STOP_TIMEOUT = 20
 RETRY_DELAY = timedelta(hours = 1)
+
+
+def current_time() -> datetime:
+    return datetime.now(BERLIN)
 
 
 @dataclass
@@ -113,32 +119,41 @@ class Scheduler:
             except ProcessLookupError:
                 pass
 
-    def run_batch(self) -> bool:
-        """Inherit container logs; terminate descendants on timeout or shutdown."""
-        self.child = subprocess.Popen(["bot", "extend", "--online", "--ads=all"], start_new_session = True)  # noqa: S603,S607
-        deadline = time.monotonic() + RUN_TIMEOUT
-        try:
-            while not self.stopping.is_set():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    LOG.error("Account-extension run exceeded 30 minutes; stopping its process group.")
-                    return False
-                try:
-                    self.child.wait(timeout = min(1, remaining))
-                    return self.child.returncode == 0 and not self.stopping.is_set()
-                except subprocess.TimeoutExpired:
-                    continue
-            return False
-        finally:
-            # Always clean up descendants, even when the parent exited first.
-            self._signal_child(signal.SIGTERM)
+    def run_command(self, arguments:list[str]) -> bool:
+        """Run the public CLI and detect per-ad failures despite a zero exit status."""
+        with tempfile.TemporaryFile(mode = "w+b") as output:
+            self.child = subprocess.Popen(arguments, stdout = output, stderr = subprocess.STDOUT, start_new_session = True)  # noqa: S603 - fixed public CLI command
+            deadline = time.monotonic() + RUN_TIMEOUT
             try:
-                self.child.wait(timeout = STOP_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                pass
-            self._signal_child(signal.SIGKILL)
-            self.child.wait()
-            self.child = None
+                while not self.stopping.is_set():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        LOG.error("Account-extension command exceeded its time limit.")
+                        return False
+                    try:
+                        self.child.wait(timeout = min(1, remaining))
+                        output.seek(0)
+                        text = re.sub(r"\x1b\[[0-9;]*m", "", output.read().decode("utf-8", errors = "replace"))
+                        failed = "FAILED:" in text or "[ERROR]" in text or "[CRITICAL]" in text
+                        return self.child.returncode == 0 and not failed and not self.stopping.is_set()
+                    except subprocess.TimeoutExpired:
+                        continue
+                return False
+            finally:
+                self._signal_child(signal.SIGTERM)
+                try:
+                    self.child.wait(timeout = STOP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    pass
+                self._signal_child(signal.SIGKILL)
+                self.child.wait()
+                self.child = None
+
+    def run_batch(self) -> bool:
+        """Download the online account before extending through upstream's public CLI."""
+        # The wrapper holds one lock across both commands, preventing manual commands
+        # and other containers from opening the shared browser profile concurrently.
+        return self.run_command(["account-extend"])
 
     def tick(self, now:datetime) -> Schedule:
         """Advance a single tick; time and execution are replaceable in offline tests."""
@@ -156,7 +171,7 @@ class Scheduler:
             success = False
         if self.stopping.is_set():
             return schedule
-        schedule.finish(misc.now().astimezone(BERLIN), success = success)
+        schedule.finish(current_time().astimezone(BERLIN), success = success)
         save_schedule(self.state_path, schedule)
         if success:
             LOG.info("Daily account-extension run completed.")
@@ -167,15 +182,14 @@ class Scheduler:
     def run(self) -> None:
         LOG.info("Scheduler ready. Enable account extensions with /mnt/data/automation.enabled.")
         while not self.stopping.is_set():
-            self.tick(misc.now())
+            self.tick(current_time())
             self.stopping.wait(60)
 
 
 def main() -> None:
     """Start the container's supervised scheduler."""
     os.umask(0o077)
-    loggers.configure_console_logging()
-    LOG.setLevel(loggers.INFO)
+    logging.basicConfig(level = logging.INFO, format = "%(asctime)s [%(levelname)s] %(message)s")
     scheduler = Scheduler(Path("/mnt/data"))
     signal.signal(signal.SIGTERM, scheduler.stop)
     signal.signal(signal.SIGINT, scheduler.stop)

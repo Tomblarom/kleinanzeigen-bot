@@ -62,8 +62,6 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         self.command = "help"
         self.ads_selector = "due"
         self._ads_selector_explicit:bool = False
-        self.online = False
-        self.dry_run = False
         self.keep_old_ads = False
 
         # Ensure the attribute always exists on the bot object so that
@@ -97,8 +95,6 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         self.command = parsed.command
         self.ads_selector = parsed.ads_selector
         self._ads_selector_explicit = parsed.ads_selector_explicit
-        self.online = parsed.online
-        self.dry_run = parsed.dry_run
         self.keep_old_ads = parsed.keep_old_ads
         self._preserve_local_settings = parsed.preserve_local_settings
         self._config_arg = parsed.config_arg
@@ -277,21 +273,21 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         """Let the user authenticate in the configured persistent browser profile."""
         _misc.ensure(sys.stdin.isatty(), _("Manual login requires an interactive terminal."))
         self._bootstrap_runtime()
-        if self.browser_config.use_private_window or any(
-            arg in {"--incognito", "--guest", "--inprivate"} for arg in self.browser_config.arguments
-        ):
-            LOG.warning("To reuse this session, disable private/guest mode in your browser configuration for subsequent commands.")
-        self.browser_config.use_private_window = False
-        self.browser_config.arguments = [
-            arg for arg in self.browser_config.arguments
-            if arg.partition("=")[0] not in {"--headless", "--incognito", "--guest", "--inprivate"}
-        ]
+        _misc.ensure(
+            not self.browser_config.use_private_window
+            and not any(arg.lstrip("-").partition("=")[0] in {"headless", "incognito", "guest", "inprivate"} for arg in self.browser_config.arguments),
+            _("Manual login needs a persistent, visible browser session. Set browser.use_private_window to false and remove "
+              "--headless, --incognito, --guest and --inprivate from browser.arguments."),
+        )
         await self.create_browser_session()
         await self.web_open(self.root_url)
         await _login_flow.click_gdpr_banner(self)
         LOG.info("Complete login and any device verification in the browser, then return to this terminal.")
         await _misc.ainput(_("Press ENTER when done..."))
-        await self.web_open(self.root_url, reload_if_already_open = True)
+        try:
+            await self.web_open(self.root_url, reload_if_already_open = True)
+        except TimeoutError:
+            LOG.warning("Reloading the start page timed out. Checking the login state on the current page.")
         detection = await self.get_login_state(capture_diagnostics = False)
         _misc.ensure(detection.is_logged_in, _("Manual login could not be confirmed. Check the account and try again."))
         LOG.info("Manual login confirmed. The browser session is saved in the configured profile.")
@@ -369,13 +365,6 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 sys.exit(2)
             LOG.info("Extending all ads within 8-day window...")
             self.ads_selector = "all"
-
-        if self.online:
-            await self._open_logged_in_browser()
-            await extend_flow.extend_online_ads(
-                self, self.root_url, selector = self.ads_selector, dry_run = self.dry_run,
-            )
-            return
 
         if ads := self.load_ads():
             await self._open_logged_in_browser()

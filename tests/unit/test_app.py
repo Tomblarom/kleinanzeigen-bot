@@ -332,8 +332,8 @@ class TestKleinanzeigenBotAdManagement:
 @pytest.mark.parametrize("confirmed", [True, False])
 async def test_manual_login_uses_persistent_visible_profile_and_verifies_account(test_bot:KleinanzeigenBot, confirmed:bool, tmp_path:Path) -> None:
     """Manual login never submits credentials and always closes the managed session."""
-    test_bot.browser_config.use_private_window = confirmed
-    test_bot.browser_config.arguments = (["--headless=new", "--incognito", "--guest", "--inprivate"] if confirmed else []) + ["--disable-dev-shm-usage"]
+    test_bot.browser_config.use_private_window = False
+    test_bot.browser_config.arguments = ["--disable-dev-shm-usage"]
     reason = LoginDetectionReason.USER_INFO_MATCH if confirmed else LoginDetectionReason.CTA_MATCH
     with (
         patch("sys.stdin.isatty", return_value = True),
@@ -354,8 +354,49 @@ async def test_manual_login_uses_persistent_visible_profile_and_verifies_account
         create.assert_awaited_once()
         close.assert_awaited_once()
         automatic_login.assert_not_awaited()
-    assert test_bot.browser_config.use_private_window is False
-    assert test_bot.browser_config.arguments == ["--disable-dev-shm-usage"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("private", "arguments"), [
+    (True, []),
+    (False, ["--headless=new"]),
+    (False, ["--incognito"]),
+    (False, ["--guest"]),
+    (False, ["--inprivate"]),
+    (False, ["-inprivate"]),
+    (False, ["-headless=new"]),
+])
+async def test_manual_login_rejects_config_without_persistent_visible_session(
+    test_bot:KleinanzeigenBot, private:bool, arguments:list[str]
+) -> None:
+    test_bot.browser_config.use_private_window = private
+    test_bot.browser_config.arguments = arguments
+    with (
+        patch("sys.stdin.isatty", return_value = True),
+        patch.object(test_bot, "_bootstrap_runtime"),
+        patch.object(test_bot, "create_browser_session", new_callable = AsyncMock) as create,
+        pytest.raises(AssertionError, match = "persistent, visible browser session"),
+    ):
+        await test_bot._handle_login()
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_login_checks_state_when_reload_times_out(test_bot:KleinanzeigenBot) -> None:
+    test_bot.browser_config.use_private_window = False
+    test_bot.browser_config.arguments = []
+    with (
+        patch("sys.stdin.isatty", return_value = True),
+        patch.object(test_bot, "_bootstrap_runtime"),
+        patch.object(test_bot, "create_browser_session", new_callable = AsyncMock),
+        patch.object(test_bot, "web_open", new_callable = AsyncMock, side_effect = [None, TimeoutError()]),
+        patch("kleinanzeigen_bot.login_flow.click_gdpr_banner", new_callable = AsyncMock),
+        patch("kleinanzeigen_bot.utils.misc.ainput", new_callable = AsyncMock),
+        patch.object(test_bot, "get_login_state", new_callable = AsyncMock,
+                     return_value = LoginDetectionResult(True, LoginDetectionReason.USER_INFO_MATCH)) as state,
+    ):
+        await test_bot._handle_login()
+    state.assert_awaited_once()
 
 
 @pytest.mark.asyncio

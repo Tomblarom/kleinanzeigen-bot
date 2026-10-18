@@ -24,7 +24,7 @@ from kleinanzeigen_bot.model.ad_model import ContactPartial
 
 from .model.ad_model import OPTION_NAME_BY_CARRIER_CODE, AdPartial, validate_condition_api_mapping
 from .model.config_model import AutoPriceReductionConfig, Config
-from .utils import dicts, files, i18n, loggers, misc, reflect
+from .utils import dicts, files, i18n, loggers, misc, page_scripts, reflect
 from .utils.web_scraping_mixin import Browser, By, WebScrapingMixin
 
 __all__ = [
@@ -774,17 +774,7 @@ class AdExtractor(WebScrapingMixin):
         Returns an empty dict if the island or its props cannot be parsed.
         """
         try:
-            raw = await self.web_execute("""(() => {
-                // Find the astro-island that contains ad data (imageDetails, userDetails, etc.)
-                const islands = document.querySelectorAll('astro-island');
-                for (const island of islands) {
-                    const props = island.getAttribute('props') || '';
-                    if (props.includes('imageDetails') || props.includes('formattedCreationDate') || props.includes('userDetails')) {
-                        return props;
-                    }
-                }
-                return null;
-            })()""")
+            raw = await self.web_execute(page_scripts.call("ad_island_props"))
             if not raw or not isinstance(raw, str):
                 LOG.debug("No Astro island with ad data found on %s", self.page.url)
                 return {}
@@ -1198,14 +1188,15 @@ class AdExtractor(WebScrapingMixin):
     def _parse_ad_attributes(ad_attributes:str) -> dict[str, str]:
         """Parse the ``ad_attributes`` tracking string into API key/value pairs.
 
-        ``versand_s`` is dropped because shipping is modelled separately.
+        ``versand_s`` is dropped because shipping is modelled separately, ``seller_badges_s`` because
+        it is tracking data without a corresponding form field.
 
         :param ad_attributes: e.g. ``"art_s:lautsprecher_kopfhoerer|condition_s:like_new|versand_s:t"``
         :return: a dictionary (possibly empty) mapping attribute names to their values
         """
         # split once only: a value may itself contain a colon
         parsed = dict(item.split(":", 1) for item in ad_attributes.split("|") if ":" in item)
-        return {key: value for key, value in parsed.items() if not key.endswith(".versand_s") and key != "versand_s"}
+        return {key: value for key, value in parsed.items() if key.rsplit(".", 1)[-1] not in {"versand_s", "seller_badges_s"}}
 
     async def _extract_special_attributes_from_ad_page(
         self,
